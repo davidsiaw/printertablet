@@ -34,7 +34,7 @@ LOCAL_SRC_FILES := $(SDL_PATH)/src/main/android/SDL_android_main.cpp \
 	$(FILE_LIST:$(LOCAL_PATH)/%=%)
 
 LOCAL_SHARED_LIBRARIES := SDL2 SDL2_image SDL2_mixer SDL2_ttf
-LOCAL_STATIC_LIBRARIES := luacppinterface lua box2d
+LOCAL_STATIC_LIBRARIES := luacppinterface lua box2d mruby
 
 LOCAL_LDLIBS := -lGLESv2 -llog
 

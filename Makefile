@@ -1,7 +1,7 @@
 OS := $(firstword $(shell uname -s))
 
 ASSETS_DIR=assets
-TARGET_NAME=aldebaran
+TARGET_NAME=printertablet
 TARGET=$(ASSETS_DIR)/$(TARGET_NAME)
 
 ifeq ($(OS),Darwin)
@@ -20,15 +20,15 @@ android:
 
 # Run from the host: builds in the ndk-env container (NDK r9, API level 10).
 ANDROID_IMAGE    = davidsiaw/ndk-env:original-api-level-10
-ANDROID_PACKAGE  = net.astrobunny.aldebaran
-ANDROID_ACTIVITY = .Aldebaran
+ANDROID_PACKAGE  = net.astrobunny.printertablet
+ANDROID_ACTIVITY = .PrinterTablet
 # Persistent debug signing key, so `adb install -r` keeps working between builds.
 ANDROID_KEYDIR   = $(HOME)/.ndk-env-android
 DOCKER_TTY      := $(shell [ -t 0 ] && echo -ti)
 
 # Builds as root (the 2014 SDK tools expect it), then hands everything the
 # container wrote back to the calling user, even if the build failed.
-build-android:
+build-android: $(MRUBY_SOURCES_MK)
 	mkdir -p $(ANDROID_KEYDIR)
 	docker run --rm $(DOCKER_TTY) \
 		-e JAVA_HOME=/usr/lib/jvm/java-7-openjdk-amd64 \
@@ -41,6 +41,19 @@ run-android: build-android
 	adb install -r $$(ls -t bin/*-debug.apk | head -n1)
 	adb logcat -c
 	adb shell am start -n $(ANDROID_PACKAGE)/$(ANDROID_ACTIVITY)
-	adb logcat | grep --line-buffered -iE "SDL|aldebaran|AndroidRuntime|DEBUG"
+	adb logcat | grep --line-buffered -iE "SDL|printertablet|AndroidRuntime|DEBUG"
 
-.PHONY: run android build-android run-android
+# Replace main.rb on the device without rebuilding, then restart the app.
+# The app prefers this copy over the one bundled in the APK.
+# Must match the path in Scripting::MainScriptPath() (jni/src/scripting.cpp).
+ANDROID_SCRIPT_DIR = /sdcard/Android/data/$(ANDROID_PACKAGE)/files
+push-script:
+	adb push assets/scripts/main.rb $(ANDROID_SCRIPT_DIR)/main.rb
+	adb shell am force-stop $(ANDROID_PACKAGE)
+	adb shell am start -n $(ANDROID_PACKAGE)/$(ANDROID_ACTIVITY)
+
+# Go back to the main.rb bundled in the APK.
+unpush-script:
+	adb shell rm -f $(ANDROID_SCRIPT_DIR)/main.rb
+
+.PHONY: run android build-android run-android push-script unpush-script

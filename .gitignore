@@ -1,1 +1,11 @@
 .DS_Store
+jni/mruby-glue/build/
+
+# Build output
+/bin/
+/gen/
+/libs/
+/obj/
+/SDL2Framework/
+/assets/printertablet
+jni/mruby-glue/build_config.rb.lock

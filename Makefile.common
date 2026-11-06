@@ -18,22 +18,39 @@ FREETYPE=$(SDL2PREFIX)/lib/libfreetype.la
 LUAINTERFACESRC=jni/luacppinterface/LuaCppInterface
 LUA=jni/luacppinterface/lua/src/liblua.a
 
+# mruby: built on the host by its own build system (minirake) using
+# jni/mruby-glue/build_config.rb. The same build also writes mruby_sources.mk,
+# which jni/mruby-glue/Android.mk compiles with the NDK.
+MRUBY_ROOT=jni/mruby-cpp/mruby
+MRUBY_BUILD=jni/mruby-glue/build
+LIBMRUBY=$(MRUBY_BUILD)/host/lib/libmruby.a
+MRUBY_SOURCES_MK=$(MRUBY_BUILD)/host/mruby_sources.mk
+ifeq (,$(filter clean,$(MAKECMDGOALS)))
+# Not -include: with -include, make hides a failed mruby build behind a
+# misleading "No rule to make target .../mruby_sources.mk".
+include $(MRUBY_SOURCES_MK)
+endif
+
 CXXFLAGS=$(EXTRA_CFLAGS) -DSMALL_SCREEN \
 	-pipe $(shell $(SDL2CONFIG) --cflags) \
 	-I$(PWD)/jni/luacppinterface/LuaCppInterface \
 	-I$(PWD)/jni/luacppinterface/lua/src \
 	-I$(PWD)/jni/boost \
 	-I$(PWD)/jni/box2d \
-	-I$(PWD)/jni/glm
+	-I$(PWD)/jni/glm \
+	-I$(PWD)/jni/mruby-cpp \
+	-I$(PWD)/$(MRUBY_ROOT)/include \
+	-I$(PWD)/$(MRUBY_BUILD)/host/include \
+	$(addprefix -D,$(MRUBY_APP_DEFINES))
 
-LDFLAGS=$(shell $(SDL2CONFIG) --libs) -lSDL2_image -lSDL2_mixer -lSDL2_ttf -lstdc++ $(OPENGL_LDFLAGS)
+LDFLAGS=$(shell $(SDL2CONFIG) --libs) -lSDL2_image -lSDL2_mixer -lSDL2_ttf -lstdc++ $(OPENGL_LDFLAGS) -lm
 
 SRCDIR=jni/src
 SRC=$(shell find $(LUAINTERFACESRC) -name "*.cpp") $(shell find $(SRCDIR) -name "*.cpp") 
 OUT=obj
 OBJS=$(SRC:%.cpp=$(OUT)/%.o)
 DEPS=$(SRC:%.cpp=$(OUT)/%.d)
-NODEPS=clean android build-android run-android
+NODEPS=clean mruby android build-android run-android push-script unpush-script
 
 .PHONY = all clean
 
@@ -44,13 +61,39 @@ all: $(TARGET)
 	$(AT)echo "Building for $(OS)"
 
 clean:
-	-rm -rf $(TARGET) $(OUT) $(SDL2PREFIX)
+	-rm -rf $(TARGET) $(OUT) $(SDL2PREFIX) $(MRUBY_BUILD) bin gen libs
+	-$(MAKE) -C jni/luacppinterface/lua/src clean $(REDIR)
+
+# `make mruby` forces a rebuild check (e.g. after editing mruby sources);
+# otherwise it only rebuilds when the build config changes.
+#
+# Keep Bundler out of it: mruby ships a Gemfile.lock pinning rake 13.0.6, and if
+# Bundler gets activated (RUBYOPT=-rbundler/setup, a bundler binstub for rake,
+# inherited BUNDLE_* vars) the build dies unless that exact rake is installed.
+# Any rake works, so clear those vars and load rake as a library instead of
+# going through minirake's `exec "rake"`.
+MRUBY_RAKE = cd $(MRUBY_ROOT) && \
+	env -u RUBYOPT -u BUNDLE_GEMFILE -u BUNDLE_BIN_PATH -u BUNDLER_SETUP -u BUNDLER_VERSION -u RUBYGEMS_GEMDEPS \
+		MRUBY_CONFIG=$(PWD)/jni/mruby-glue/build_config.rb MRUBY_BUILD_DIR=$(PWD)/$(MRUBY_BUILD) \
+		ruby -e 'require "rake"; Rake.application.run' -- -j4 all sources_mk $(REDIR)
+
+mruby:
+	$(AT)echo [MRUBY] $(LIBMRUBY)
+	$(AT)$(MRUBY_RAKE)
+
+$(MRUBY_SOURCES_MK): jni/mruby-glue/build_config.rb
+	$(AT)echo [MRUBY] $(LIBMRUBY)
+	$(AT)$(MRUBY_RAKE)
+
+$(LIBMRUBY): $(MRUBY_SOURCES_MK) ;
+
+.PHONY: mruby
 
 ifeq (,$(filter $(NODEPS),$(MAKECMDGOALS)))
     -include $(DEPS)
 endif
 
-$(TARGET): $(OBJS) $(LUA)
+$(TARGET): $(OBJS) $(LUA) $(LIBMRUBY)
 	$(AT)echo [LINK] $@
 	$(AT)$(CXX) $(CXXFLAGS) $^ $(LDFLAGS) -o $@ 
 
@@ -59,7 +102,7 @@ $(TARGET): $(OBJS) $(LUA)
 	$(AT)mkdir -p $(dir $@) 
 	$(AT)touch $@
 
-$(OUT)/%.d:%.cpp $$(@D)/.f $(SDL2MAIN) $(SDL2IMAGE) $(SDL2MIXER) $(SDL2TTF)
+$(OUT)/%.d:%.cpp $$(@D)/.f $(SDL2MAIN) $(SDL2IMAGE) $(SDL2MIXER) $(SDL2TTF) $(LIBMRUBY)
 	$(AT)echo [DEP] $<
 	$(AT)$(CXX) $(CXXFLAGS) -MM -MT '$(patsubst %.d,%.o,$@)' $< -MF $@
 

@@ -546,6 +546,11 @@ class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
             SDLActivity.mSDLThread = new Thread(new SDLMain(), "SDLThread");
             enableSensor(Sensor.TYPE_ACCELEROMETER, true);
             SDLActivity.mSDLThread.start();
+        } else {
+            // Returning from the background: onResume and focus may both have
+            // happened before the surface was ready, in which case nobody else
+            // resumes and the SDL thread stays blocked (black screen).
+            SDLActivity.handleResume();
         }
     }
 

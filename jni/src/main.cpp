@@ -43,6 +43,22 @@
 
 #include "rpgmapscene.hpp"
 
+#include "moonrakerclient.hpp"
+#include "statusbarscene.hpp"
+#include "scripting.hpp"
+#include <mruby.hpp>
+
+// The printer's Moonraker server. Defaults; main.rb sets the real one with
+// `moonraker "host", port` (Moonraker's default port is 7125).
+static std::string moonrakerHost = "192.168.1.100";
+static int moonrakerPort = 7125;
+
+static void SetMoonraker(std::string host, int port)
+{
+    moonrakerHost = host;
+    moonrakerPort = port;
+}
+
 
 SDL_Surface* flipVert(SDL_Surface* sfc)
 {
@@ -103,11 +119,26 @@ int exists(const char *fname)
     return 0;
 }
 
-void run(std::shared_ptr<SceneInterface> scene, std::shared_ptr<GameContext> context)
+// Builds the scene graph. Called again whenever the GL context is replaced,
+// because every shader, texture and buffer belongs to the old context.
+typedef std::function<std::shared_ptr<SceneInterface>()> SceneFactory;
+
+static void DrainGLErrors()
+{
+	while (glGetError() != GL_NO_ERROR) { }
+}
+
+void run(SceneFactory makeScene, std::shared_ptr<GameContext> context)
 {
 	InputState inputState;
 	Uint32 time = SDL_GetTicks();
+	std::shared_ptr<SceneInterface> scene = makeScene();
 	scene->Init(context->GetWindow());
+
+	// In the background there is no surface to draw on (Android destroys it
+	// when you press Home), so stop rendering until we are back.
+	bool inBackground = false;
+	SDL_GLContext glContext = SDL_GL_GetCurrentContext();
 	
 	while (scene->Running())
 	{
@@ -117,6 +148,14 @@ void run(std::shared_ptr<SceneInterface> scene, std::shared_ptr<GameContext> con
 			if (e.type == SDL_QUIT)
 			{
 				break;
+			}
+			if (e.type == SDL_APP_WILLENTERBACKGROUND || e.type == SDL_APP_DIDENTERBACKGROUND)
+			{
+				inBackground = true;
+			}
+			if (e.type == SDL_APP_DIDENTERFOREGROUND)
+			{
+				inBackground = false;
 			}
             if (e.type == SDL_KEYDOWN)
             {
@@ -138,11 +177,29 @@ void run(std::shared_ptr<SceneInterface> scene, std::shared_ptr<GameContext> con
 			CaptureInputState(context->GetKeyMap(), &inputState, &e);
 		}
 		
+		if (inBackground)
+		{
+			continue;   // SDL blocks inside SDL_PollEvent until we are resumed
+		}
+
+		// On resume SDL may have had to create a brand new GL context (the old
+		// one was lost); our GL objects are gone, so rebuild everything.
+		if (SDL_GL_GetCurrentContext() != glContext)
+		{
+			printlog("GL context was replaced on resume; rebuilding the scene\n");
+			scene.reset();      // free old objects before the new ones get names
+			DrainGLErrors();    // deleting objects of a dead context sets errors
+			glContext = SDL_GL_GetCurrentContext();
+			glViewport(0, 0, context->GetScreenWidth(), context->GetScreenHeight());
+			scene = makeScene();
+			scene->Init(context->GetWindow());
+		}
+
 		Uint32 now = SDL_GetTicks();
 		scene->Update(inputState, now);
 		if (now - time > 15)
         {
-            glClearColor( 1.0, 1.0, 1.0, 1.0 );
+            glClearColor( 0.0, 0.0, 0.0, 1.0 );
             glClear ( GL_COLOR_BUFFER_BIT );
             scene->Render(context);
             SDL_GL_SwapWindow(context->GetWindow());
@@ -192,62 +249,23 @@ public:
 
 void game(std::shared_ptr<GameContext> context)
 {
-    auto tiles = std::make_shared<Tileset>("tiles/testtiles1.png", 24);
-    auto charset = std::make_shared<Characterset>("sprites/output.png", 48, 64);
-    
-    auto scene = std::make_shared<RPGMapScene>(10, 10, tiles, charset);
-    
-    for (int x=0; x<20; x++)
-    for (int y=0; y<20; y++)
-        scene->Set(0, x, y, 21);
-    
-    int rikka = scene->SetCharacter(5, 0, 0);
-    
-    int rikka2 = scene->SetCharacter(5, 6, 6);
-    
-    //scene->Set(1, 0, 0, 22);
-    //scene->Set(2, 0, 0, 21);
-    //scene->Set(3, 0, 0, 21);
-    
-    auto wholeScene = std::make_shared<CompositeScene>();
-    wholeScene->AddScene(scene, 50, 50);
-    
-    auto fpsScene = std::make_shared<FPSScene>();
-    wholeScene->AddScene(fpsScene, 0, 0);
-    
-    auto processingScene = std::make_shared<ProcessingScene>(
-        [&](const InputState& inputs, Uint32 timestamp)
-        {
-            if (inputs.GetButtonState(InputState::DOWN))
-            {
-                scene->MoveCharacter(rikka, InputState::DOWN, 4, 990);
-            }
-            
-            if (inputs.GetButtonState(InputState::UP))
-            {
-                scene->MoveCharacter(rikka, InputState::UP, 4, 990);
-            }
+    Scripting scripting;
+    scripting.GetVM().bind_method("moonraker", SetMoonraker);
+    scripting.RunFile(Scripting::MainScriptPath());
 
-            if (inputs.GetButtonState(InputState::LEFT))
-            {
-                scene->MoveCharacter(rikka, InputState::LEFT, 4, 990);
-            }
+    auto moonraker = std::make_shared<MoonrakerClient>(moonrakerHost, moonrakerPort);
 
-            if (inputs.GetButtonState(InputState::RIGHT))
-            {
-                scene->MoveCharacter(rikka, InputState::RIGHT, 4, 990);
-            }
+    SceneFactory makeScene = [&]() -> std::shared_ptr<SceneInterface>
+    {
+        auto wholeScene = std::make_shared<CompositeScene>();
 
-        },
-        [&]() -> bool
-        {
-            return true;
-        });
-    
-    wholeScene->AddScene(processingScene, 0, 0);
+        auto statusBar = std::make_shared<StatusBarScene>(moonraker, context->GetScreenWidth(), context->GetScreenHeight());
+        wholeScene->AddScene(statusBar, 0, context->GetScreenHeight() - statusBar->GetHeight());
 
-    run(wholeScene, context);
-    
+        return wholeScene;
+    };
+
+    run(makeScene, context);
 }
 
 int main(int argc, char** argv)
@@ -303,7 +321,7 @@ int main(int argc, char** argv)
     
 	// Create an application window with the following settings:
 	SDL_Window* window = SDL_CreateWindow(
-                              "Aldebaran",
+                              "Printer Tablet",
                               SDL_WINDOWPOS_UNDEFINED,
                               SDL_WINDOWPOS_UNDEFINED,
                               WIDTH,
@@ -319,6 +337,10 @@ int main(int argc, char** argv)
 		return 1;
 	}
 	
+	// Mobile platforms ignore the requested size and go fullscreen; use what we got.
+	SDL_GetWindowSize(window, &WIDTH, &HEIGHT);
+	printlog("Actual window size: %d x %d\n", WIDTH, HEIGHT);
+
 	printlog("Beginning game with window=%p\n", window);
 	try
 	{

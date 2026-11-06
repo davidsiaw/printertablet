@@ -22,3 +22,6 @@
 [submodule "jni/glm"]
 	path = jni/glm
 	url = https://github.com/davidsiaw/glm.git
+[submodule "jni/mruby-cpp"]
+	path = jni/mruby-cpp
+	url = https://github.com/davidsiaw/mruby-cpp
