@@ -24,6 +24,7 @@ MRuby::Build.new do |conf|
   conf.gem core: 'mruby-bigint'
   conf.gembox 'metaprog'          # includes mruby-compiler: load .rb source at runtime
   conf.gem core: 'mruby-print'    # print/puts/p (redirected to logcat on Android)
+  conf.gem File.expand_path('../mruby-json', __dir__)   # JSON.parse / JSON.generate (submodule)
 
   # Host tool only (compiles the gems' Ruby code); not part of libmruby.
   conf.gem core: 'mruby-bin-mrbc'
@@ -39,11 +40,17 @@ task :sources_mk do
   here = Pathname.new(__dir__)
   rel = ->(path) { Pathname.new(File.expand_path(path)).relative_path_from(here).to_s }
 
+  # Gems from outside mruby (e.g. ../mruby-json) build into mrbgems/<name>/
+  # but their sources are in the gem's own folder.
+  gem_dirs = build.gems.map { |g| ["mrbgems/#{g.name}/", g.dir] }
+
   sources = build.libmruby_objs.flatten.map do |obj|
     stem = Pathname.new(obj).relative_path_from(Pathname.new(build.build_dir)).sub_ext('').to_s
-    src = [build.build_dir, MRUBY_ROOT].product(%w[.c .cxx .cpp])
-             .map { |dir, ext| File.join(dir, stem + ext) }
-             .find { |f| File.exist?(f) }
+    bases = [build.build_dir, MRUBY_ROOT].map { |dir| File.join(dir, stem) }
+    gem_dirs.each { |prefix, dir| bases << File.join(dir, stem[prefix.size..-1]) if stem.start_with?(prefix) }
+    src = bases.product(%w[.c .cxx .cpp])
+               .map { |base, ext| base + ext }
+               .find { |f| File.exist?(f) }
     raise "sources_mk: no source for #{obj}" unless src
     rel.(src)
   end

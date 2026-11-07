@@ -43,24 +43,13 @@
 
 #include "rpgmapscene.hpp"
 
-#include "moonrakerclient.hpp"
-#include "statusbarscene.hpp"
-#include "toolheadpanelscene.hpp"
+#include "native/native.hpp"
+#include "ui/uitree.hpp"
+#include "ui/uiscene.hpp"
 #include "ripplescene.hpp"
 #include "screensaver.hpp"
 #include "scripting.hpp"
 #include <mruby.hpp>
-
-// The printer's Moonraker server. Defaults; main.rb sets the real one with
-// `moonraker "host", port` (Moonraker's default port is 7125).
-static std::string moonrakerHost = "192.168.1.100";
-static int moonrakerPort = 7125;
-
-static void SetMoonraker(std::string host, int port)
-{
-    moonrakerHost = host;
-    moonrakerPort = port;
-}
 
 
 SDL_Surface* flipVert(SDL_Surface* sfc)
@@ -253,33 +242,51 @@ public:
 void game(std::shared_ptr<GameContext> context)
 {
     Scripting scripting;
-    scripting.GetVM().bind_method("moonraker", SetMoonraker);
+    UiTree ui;
+    Native::BindUI(scripting, ui, context->GetScreenWidth(), context->GetScreenHeight());
+    Native::BindWorkers(scripting);
     scripting.RunFile(Scripting::MainScriptPath());
 
-    auto moonraker = std::make_shared<MoonrakerClient>(moonrakerHost, moonrakerPort);
+    mrb_state* mrb = scripting.GetState();
+    auto onTouch = [&scripting, mrb](int id, UiScene::TouchKind kind, double x, double y)
+    {
+        int ai = mrb_gc_arena_save(mrb);   // floats can be heap objects (32-bit)
+        mrb_value args[4] = { mrb_fixnum_value(id), mrb_fixnum_value(kind), mrb_float_value(mrb, x), mrb_float_value(mrb, y) };
+        scripting.Call("Native::UI", "touch", 4, args);
+        mrb_gc_arena_restore(mrb, ai);
+    };
 
     SceneFactory makeScene = [&]() -> std::shared_ptr<SceneInterface>
     {
         auto wholeScene = std::make_shared<CompositeScene>();
 
-        auto statusBar = std::make_shared<StatusBarScene>(moonraker, context->GetScreenWidth(), context->GetScreenHeight());
-        wholeScene->AddScene(statusBar, 0, context->GetScreenHeight() - statusBar->GetHeight());
+        // Runs Ruby's timers, but only on frames where one is due: Ruby tells
+        // us when (Native::UI.wake_at). Likewise workers' messages, only when
+        // there are some. So most frames don't touch Ruby at all.
+        wholeScene->AddScene(std::make_shared<ProcessingScene>(
+            [&scripting, &ui, mrb](const InputState&, Uint32 timestamp)
+            {
+                double seconds = timestamp / 1000.0;
+                if (ui.WakeDue(seconds))
+                {
+                    int ai = mrb_gc_arena_save(mrb);
+                    mrb_value now = mrb_float_value(mrb, seconds);
+                    scripting.Call("Native::UI", "frame", 1, &now);
+                    mrb_gc_arena_restore(mrb, ai);
+                }
+                Native::DeliverWorkerMessages(scripting);
+            },
+            []() { return true; }), 0, 0);
 
-        // Toolhead panel on the left, filling the height above the status bar.
-        int margin = context->GetScreenHeight() / 30;
-        int gap = margin / 2;
-        int available = context->GetScreenHeight() - statusBar->GetHeight() - 2 * margin;
-        int boxHeight = available / 9;
-        int sliderHeight = boxHeight;
-        int size = available - boxHeight - sliderHeight - 2 * gap;
-        auto toolhead = std::make_shared<ToolheadPanelScene>(moonraker, size, boxHeight, gap, sliderHeight);
-        wholeScene->AddScene(toolhead, margin, margin);
+        // Everything Ruby put on the screen.
+        wholeScene->AddScene(std::make_shared<UiScene>(ui, context->GetScreenWidth(), context->GetScreenHeight(), onTouch), 0, 0);
 
         auto ripples = std::make_shared<RippleScene>(context->GetScreenWidth(), context->GetScreenHeight());
         return std::make_shared<ScreensaverSwitch>(wholeScene, ripples);
     };
 
     run(makeScene, context);
+    Native::StopWorkers();   // before `scripting` (their messages' destination) goes
 }
 
 int main(int argc, char** argv)

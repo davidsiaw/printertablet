@@ -33,6 +33,7 @@ endif
 
 CXXFLAGS=$(EXTRA_CFLAGS) -DSMALL_SCREEN \
 	-pipe $(shell $(SDL2CONFIG) --cflags) \
+	-I$(PWD)/jni/src \
 	-I$(PWD)/jni/luacppinterface/LuaCppInterface \
 	-I$(PWD)/jni/luacppinterface/lua/src \
 	-I$(PWD)/jni/boost \

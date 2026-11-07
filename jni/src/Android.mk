@@ -16,7 +16,8 @@ GLM_PATH := ../glm
 
 LOCAL_CFLAGS := -std=gnu++11 -fexceptions -frtti
 
-LOCAL_C_INCLUDES := $(LOCAL_PATH)/$(SDL_PATH)/include \
+LOCAL_C_INCLUDES := $(LOCAL_PATH) \
+	$(LOCAL_PATH)/$(SDL_PATH)/include \
 	$(LOCAL_PATH)/$(BOOST_PATH) \
 	$(LOCAL_PATH)/$(SDL_image_PATH) \
 	$(LOCAL_PATH)/$(SDL_mixer_PATH) \
@@ -28,7 +29,8 @@ LOCAL_C_INCLUDES := $(LOCAL_PATH)/$(SDL_PATH)/include \
 
 # Add your application source files here...
 
-FILE_LIST := $(wildcard $(LOCAL_PATH)/*.cpp)
+FILE_LIST := $(wildcard $(LOCAL_PATH)/*.cpp) $(wildcard $(LOCAL_PATH)/ui/*.cpp) \
+	$(wildcard $(LOCAL_PATH)/native/*.cpp)
 
 LOCAL_SRC_FILES := $(SDL_PATH)/src/main/android/SDL_android_main.cpp \
 	$(FILE_LIST:$(LOCAL_PATH)/%=%)

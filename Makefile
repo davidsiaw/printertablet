@@ -43,17 +43,20 @@ run-android: build-android
 	adb shell am start -n $(ANDROID_PACKAGE)/$(ANDROID_ACTIVITY)
 	adb logcat | grep --line-buffered -iE "SDL|printertablet|AndroidRuntime|DEBUG"
 
-# Replace main.rb on the device without rebuilding, then restart the app.
-# The app prefers this copy over the one bundled in the APK.
-# Must match the path in Scripting::MainScriptPath() (jni/src/scripting.cpp).
+# Replace the scripts on the device without rebuilding, then restart the app.
+# The app prefers these copies over the ones bundled in the APK.
+# Must match the path in Scripting::ScriptPath() (jni/src/scripting.cpp).
+# The old copy is removed first: adb pushes a folder *into* an existing one.
 ANDROID_SCRIPT_DIR = /sdcard/Android/data/$(ANDROID_PACKAGE)/files
 push-script:
-	adb push assets/scripts/main.rb $(ANDROID_SCRIPT_DIR)/main.rb
+	adb shell rm -rf $(ANDROID_SCRIPT_DIR)/scripts
+	adb push assets/scripts $(ANDROID_SCRIPT_DIR)/scripts
 	adb shell am force-stop $(ANDROID_PACKAGE)
 	adb shell am start -n $(ANDROID_PACKAGE)/$(ANDROID_ACTIVITY)
 
-# Go back to the main.rb bundled in the APK.
+# Go back to the scripts bundled in the APK. (main.rb is where older builds
+# looked for a pushed script.)
 unpush-script:
-	adb shell rm -f $(ANDROID_SCRIPT_DIR)/main.rb
+	adb shell rm -rf $(ANDROID_SCRIPT_DIR)/scripts $(ANDROID_SCRIPT_DIR)/main.rb
 
 .PHONY: run android build-android run-android push-script unpush-script

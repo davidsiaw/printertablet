@@ -25,3 +25,6 @@
 [submodule "jni/mruby-cpp"]
 	path = jni/mruby-cpp
 	url = https://github.com/davidsiaw/mruby-cpp
+[submodule "jni/mruby-json"]
+	path = jni/mruby-json
+	url = https://github.com/mattn/mruby-json
