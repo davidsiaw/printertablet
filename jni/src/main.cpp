@@ -45,6 +45,9 @@
 
 #include "moonrakerclient.hpp"
 #include "statusbarscene.hpp"
+#include "toolheadpanelscene.hpp"
+#include "ripplescene.hpp"
+#include "screensaver.hpp"
 #include "scripting.hpp"
 #include <mruby.hpp>
 
@@ -262,7 +265,18 @@ void game(std::shared_ptr<GameContext> context)
         auto statusBar = std::make_shared<StatusBarScene>(moonraker, context->GetScreenWidth(), context->GetScreenHeight());
         wholeScene->AddScene(statusBar, 0, context->GetScreenHeight() - statusBar->GetHeight());
 
-        return wholeScene;
+        // Toolhead panel on the left, filling the height above the status bar.
+        int margin = context->GetScreenHeight() / 30;
+        int gap = margin / 2;
+        int available = context->GetScreenHeight() - statusBar->GetHeight() - 2 * margin;
+        int boxHeight = available / 9;
+        int sliderHeight = boxHeight;
+        int size = available - boxHeight - sliderHeight - 2 * gap;
+        auto toolhead = std::make_shared<ToolheadPanelScene>(moonraker, size, boxHeight, gap, sliderHeight);
+        wholeScene->AddScene(toolhead, margin, margin);
+
+        auto ripples = std::make_shared<RippleScene>(context->GetScreenWidth(), context->GetScreenHeight());
+        return std::make_shared<ScreensaverSwitch>(wholeScene, ripples);
     };
 
     run(makeScene, context);

@@ -1,11 +1,14 @@
 #include "moonrakerclient.hpp"
 
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <sstream>
 
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
+
+#include "printlog.hpp"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -27,7 +30,11 @@
 namespace
 {
     const int TIMEOUT_MS = 3000;     // per connect / per read
-    const int POLL_INTERVAL_MS = 2000;
+    // Moonraker answers /printer/gcode/script only when the G-code has finished,
+    // and homing can take a while.
+    const int COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
+    const int INFO_INTERVAL_MS = 2000;       // /server/info
+    const int TOOLHEAD_INTERVAL_MS = 250;    // toolhead position, while Klipper is ready
 
 #ifdef _WIN32
     typedef SOCKET Socket;
@@ -104,10 +111,13 @@ namespace
         return true;
     }
 
-    // Minimal HTTP/1.0 GET: the server closes the connection when done, and the
-    // body is never chunked. Returns false (and sets error) on network failure.
-    bool HttpGet(const std::string& host, int port, const std::string& path,
-                 int& statusCode, std::string& body, std::string& error)
+    // Minimal HTTP/1.0 request with an empty body: the server closes the
+    // connection when done, and the body is never chunked. Returns false (and
+    // sets error) on network failure, after readTimeoutMs without data, or as
+    // soon as `cancel` becomes non-zero.
+    bool HttpRequest(const char* method, const std::string& host, int port, const std::string& path,
+                     int& statusCode, std::string& body, std::string& error,
+                     SDL_atomic_t* cancel, int readTimeoutMs = TIMEOUT_MS)
     {
         std::stringstream portStr;
         portStr << port;
@@ -145,7 +155,8 @@ namespace
             return false;
         }
 
-        std::string request = "GET " + path + " HTTP/1.0\r\nHost: " + host + "\r\nAccept: application/json\r\n\r\n";
+        std::string request = std::string(method) + " " + path + " HTTP/1.0\r\nHost: " + host +
+                              "\r\nAccept: application/json\r\nContent-Length: 0\r\n\r\n";
         for (size_t sent = 0; sent < request.size(); )
         {
             int n = send(s, request.data() + sent, (int)(request.size() - sent), SEND_FLAGS);
@@ -162,7 +173,19 @@ namespace
         char buf[4096];
         for (;;)
         {
-            if (!WaitFor(s, false, TIMEOUT_MS))
+            // Wait in short slices so a long wait can be cancelled.
+            bool readable = false;
+            for (int waited = 0; waited < readTimeoutMs && !readable; waited += 200)
+            {
+                if (SDL_AtomicGet(cancel))
+                {
+                    error = "cancelled";
+                    CloseSocket(s);
+                    return false;
+                }
+                readable = WaitFor(s, false, 200);
+            }
+            if (!readable)
             {
                 error = "no response (timed out)";
                 CloseSocket(s);
@@ -195,20 +218,28 @@ namespace
 }
 
 MoonrakerClient::MoonrakerClient(const std::string& host, int port)
-: host(host), port(port), mutex(SDL_CreateMutex()), thread(nullptr)
+: host(host), port(port), mutex(SDL_CreateMutex()), commandCond(SDL_CreateCond()),
+  thread(nullptr), commandThread(nullptr)
 {
 #ifdef _WIN32
     WSADATA wsaData;
     WSAStartup(MAKEWORD(2, 2), &wsaData);
 #endif
     SDL_AtomicSet(&stop, 0);
+    SDL_AtomicSet(&commandBusy, 0);
     thread = SDL_CreateThread(ThreadMain, "moonraker", this);
+    commandThread = SDL_CreateThread(CommandThreadMain, "moonraker-gcode", this);
 }
 
 MoonrakerClient::~MoonrakerClient()
 {
     SDL_AtomicSet(&stop, 1);
-    SDL_WaitThread(thread, nullptr);   // at most one request timeout
+    SDL_LockMutex(mutex);
+    SDL_CondSignal(commandCond);
+    SDL_UnlockMutex(mutex);
+    SDL_WaitThread(thread, nullptr);          // requests notice `stop` within 200ms
+    SDL_WaitThread(commandThread, nullptr);
+    SDL_DestroyCond(commandCond);
     SDL_DestroyMutex(mutex);
 #ifdef _WIN32
     WSACleanup();
@@ -223,27 +254,114 @@ MoonrakerClient::Status MoonrakerClient::GetStatus() const
     return copy;
 }
 
+bool MoonrakerClient::SendGcode(const std::string& script)
+{
+    if (SDL_AtomicCAS(&commandBusy, 0, 1) == SDL_FALSE)
+    {
+        return false;   // one at a time
+    }
+    SDL_LockMutex(mutex);
+    pendingCommand = script;
+    SDL_CondSignal(commandCond);
+    SDL_UnlockMutex(mutex);
+    return true;
+}
+
+bool MoonrakerClient::IsCommandRunning() const
+{
+    return SDL_AtomicGet(const_cast<SDL_atomic_t*>(&commandBusy)) != 0;
+}
+
+int MoonrakerClient::CommandThreadMain(void* self)
+{
+    MoonrakerClient* client = static_cast<MoonrakerClient*>(self);
+    for (;;)
+    {
+        SDL_LockMutex(client->mutex);
+        while (client->pendingCommand.empty() && !SDL_AtomicGet(&client->stop))
+        {
+            SDL_CondWait(client->commandCond, client->mutex);
+        }
+        std::string script = client->pendingCommand;
+        client->pendingCommand.clear();
+        SDL_UnlockMutex(client->mutex);
+
+        if (SDL_AtomicGet(&client->stop))
+        {
+            return 0;
+        }
+
+        // Percent-encode everything but unreserved characters.
+        std::string encoded;
+        for (size_t i = 0; i < script.size(); i++)
+        {
+            unsigned char c = script[i];
+            if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~')
+            {
+                encoded += (char)c;
+            }
+            else
+            {
+                char hex[4];
+                snprintf(hex, sizeof(hex), "%%%02X", c);
+                encoded += hex;
+            }
+        }
+
+        int statusCode = 0;
+        std::string body, error;
+        printlog("Moonraker: sending %s\n", script.c_str());
+        if (!HttpRequest("POST", client->host, client->port, "/printer/gcode/script?script=" + encoded,
+                         statusCode, body, error, &client->stop, COMMAND_TIMEOUT_MS))
+        {
+            printlog("Moonraker: %s failed: %s\n", script.c_str(), error.c_str());
+        }
+        else if (statusCode != 200)
+        {
+            printlog("Moonraker: %s failed: HTTP %d %s\n", script.c_str(), statusCode, body.c_str());
+        }
+        SDL_AtomicSet(&client->commandBusy, 0);
+    }
+}
+
 int MoonrakerClient::ThreadMain(void* self)
 {
     MoonrakerClient* client = static_cast<MoonrakerClient*>(self);
+    Uint32 lastInfo = 0;
+    bool first = true;
     while (!SDL_AtomicGet(&client->stop))
     {
-        client->Poll();
-        for (int waited = 0; waited < POLL_INTERVAL_MS && !SDL_AtomicGet(&client->stop); waited += 100)
+        Uint32 started = SDL_GetTicks();
+        if (first || started - lastInfo >= (Uint32)INFO_INTERVAL_MS)
         {
-            SDL_Delay(100);
+            client->PollInfo();
+            lastInfo = started;
+            first = false;
+        }
+
+        Status status = client->GetStatus();
+        int interval = INFO_INTERVAL_MS;
+        if (status.state == Connected && status.klippyState == "ready")
+        {
+            client->PollToolhead();
+            interval = TOOLHEAD_INTERVAL_MS;
+        }
+
+        while (!SDL_AtomicGet(&client->stop) && SDL_GetTicks() - started < (Uint32)interval)
+        {
+            SDL_Delay(interval < 100 ? interval : 50);
         }
     }
     return 0;
 }
 
-void MoonrakerClient::Poll()
+void MoonrakerClient::PollInfo()
 {
     Status next;
     int statusCode = 0;
     std::string body, error;
 
-    if (!HttpGet(host, port, "/server/info", statusCode, body, error))
+    if (!HttpRequest("GET", host, port, "/server/info", statusCode, body, error, &stop))
     {
         next.state = Disconnected;
         next.error = error;
@@ -279,6 +397,80 @@ void MoonrakerClient::Poll()
     }
 
     SDL_LockMutex(mutex);
-    status = next;
+    if (next.state == Connected && next.klippyState == "ready")
+    {
+        // PollToolhead owns these; don't wipe them every info poll.
+        next.hasToolhead = status.hasToolhead;
+        next.homedAxes = status.homedAxes;
+        for (int i = 0; i < 3; i++)
+        {
+            next.position[i] = status.position[i];
+            next.axisMin[i] = status.axisMin[i];
+            next.axisMax[i] = status.axisMax[i];
+        }
+    }
+    status = next;   // otherwise hasToolhead is false: stale once Klipper is gone
+    SDL_UnlockMutex(mutex);
+}
+
+namespace
+{
+    // Reads a JSON array of numbers such as [x, y, z, e] into out[0..count).
+    bool ReadVector(const boost::property_tree::ptree& tree, const char* path, double* out, int count)
+    {
+        boost::optional<const boost::property_tree::ptree&> array = tree.get_child_optional(path);
+        if (!array)
+        {
+            return false;
+        }
+        int i = 0;
+        for (boost::property_tree::ptree::const_iterator it = array->begin(); it != array->end() && i < count; ++it, ++i)
+        {
+            out[i] = it->second.get_value<double>();
+        }
+        return i == count;
+    }
+}
+
+void MoonrakerClient::PollToolhead()
+{
+    int statusCode = 0;
+    std::string body, error;
+    bool ok = false;
+    double position[3], axisMin[3], axisMax[3];
+    std::string homedAxes;
+
+    if (HttpRequest("GET", host, port, "/printer/objects/query?toolhead=position,axis_minimum,axis_maximum,homed_axes",
+                    statusCode, body, error, &stop) && statusCode == 200)
+    {
+        try
+        {
+            boost::property_tree::ptree tree;
+            std::istringstream in(body);
+            boost::property_tree::read_json(in, tree);
+            homedAxes = tree.get<std::string>("result.status.toolhead.homed_axes", "");
+            ok = ReadVector(tree, "result.status.toolhead.position", position, 3)
+              && ReadVector(tree, "result.status.toolhead.axis_minimum", axisMin, 3)
+              && ReadVector(tree, "result.status.toolhead.axis_maximum", axisMax, 3);
+        }
+        catch (const std::exception&)
+        {
+            ok = false;
+        }
+    }
+
+    // Only the toolhead fields; connection state is PollInfo's job.
+    SDL_LockMutex(mutex);
+    status.hasToolhead = ok;
+    if (ok)
+    {
+        status.homedAxes = homedAxes;
+        for (int i = 0; i < 3; i++)
+        {
+            status.position[i] = position[i];
+            status.axisMin[i] = axisMin[i];
+            status.axisMax[i] = axisMax[i];
+        }
+    }
     SDL_UnlockMutex(mutex);
 }

@@ -7,7 +7,7 @@ void CaptureInputState(std::map<int, InputState::Key> keyMap, InputState* inputS
 	{	
 		inputState->SetFingered(false);
 	}
-	else if (e->type == SDL_FINGERDOWN)
+	else if (e->type == SDL_FINGERDOWN || e->type == SDL_FINGERMOTION)
 	{
 		inputState->SetFingered(true);
 		inputState->SetFingerX(e->tfinger.x);

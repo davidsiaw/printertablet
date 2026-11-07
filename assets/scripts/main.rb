@@ -7,4 +7,4 @@
 puts "main.rb: mruby #{MRUBY_VERSION}"
 
 # The printer's Moonraker server.
-moonraker "192.168.1.100", 7125
+moonraker "192.168.4.22", 7125

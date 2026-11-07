@@ -3,6 +3,8 @@ package net.astrobunny.printertablet;
 import org.libsdl.app.SDLActivity; 
 
 import android.os.Bundle;
+import android.os.Handler;
+import android.view.MotionEvent;
 import android.view.WindowManager;
 
 /* 
@@ -11,6 +13,105 @@ import android.view.WindowManager;
 
 public class PrinterTablet extends SDLActivity
 {
+	// The screen stays on, so when nobody is using it, dim it and then replace
+	// the UI with a moving screensaver (drawn natively) to avoid burn-in.
+	private static final long DIM_AFTER_MS = 60 * 1000;
+	private static final long SCREENSAVER_AFTER_MS = 2 * 60 * 1000;
+	private static final float DIM_BRIGHTNESS = 0.05f;   // 0 turns the backlight off on some devices
+
+	// jni/src/screensaver.cpp
+	private static native void nativeSetScreensaver(boolean on);
+
+	private final Handler handler = new Handler();
+	private boolean dimmed = false;
+	private boolean screensaverOn = false;
+	private boolean swallowingWakeTouch = false;
+
+	private final Runnable dimRunnable = new Runnable()
+	{
+		public void run()
+		{
+			setBrightness(DIM_BRIGHTNESS);
+			dimmed = true;
+		}
+	};
+
+	private final Runnable screensaverRunnable = new Runnable()
+	{
+		public void run()
+		{
+			nativeSetScreensaver(true);
+			screensaverOn = true;
+		}
+	};
+
+	private void setBrightness(float brightness)
+	{
+		WindowManager.LayoutParams lp = getWindow().getAttributes();
+		lp.screenBrightness = brightness;
+		getWindow().setAttributes(lp);
+	}
+
+	// Undim, leave the screensaver, and restart the idle countdowns.
+	private void wake()
+	{
+		if (dimmed)
+		{
+			setBrightness(WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE);
+			dimmed = false;
+		}
+		if (screensaverOn)
+		{
+			nativeSetScreensaver(false);
+			screensaverOn = false;
+		}
+		stopIdleTimers();
+		handler.postDelayed(dimRunnable, DIM_AFTER_MS);
+		handler.postDelayed(screensaverRunnable, SCREENSAVER_AFTER_MS);
+	}
+
+	private void stopIdleTimers()
+	{
+		handler.removeCallbacks(dimRunnable);
+		handler.removeCallbacks(screensaverRunnable);
+	}
+
+	@Override
+	public boolean dispatchTouchEvent(MotionEvent ev)
+	{
+		// A touch on the dimmed screen only wakes it; the whole gesture is
+		// swallowed so it can't press whatever is under the finger.
+		int action = ev.getActionMasked();
+		if (dimmed && action == MotionEvent.ACTION_DOWN)
+		{
+			swallowingWakeTouch = true;
+		}
+		wake();
+		if (swallowingWakeTouch)
+		{
+			if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL)
+			{
+				swallowingWakeTouch = false;
+			}
+			return true;
+		}
+		return super.dispatchTouchEvent(ev);
+	}
+
+	@Override
+	protected void onResume()
+	{
+		super.onResume();
+		wake();
+	}
+
+	@Override
+	protected void onPause()
+	{
+		super.onPause();
+		stopIdleTimers();
+	}
+
 	@Override
 	protected void onCreate(Bundle savedInstanceState)
 	{
