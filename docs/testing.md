@@ -127,5 +127,16 @@ toolhead panel, both the old C++ one and the Ruby one (only GANTRY and M84
 sent, nothing on partial slides, tapping the track or release-outside;
 offline state), the ripple screensaver (no GL errors).
 
-Panel coordinates at 1280x800 (for scripted touches): margin 26, map at
-y 117, size 522; slider at y 652, height 78; knob travel 444.
+Coordinates at 1280x800 (for scripted touches): panel margin 26, map at
+y 117, size 522; slider at y 652, height 78, knob travel 444; X/Y/Z box
+centres (108, 65) (286, 65) (464, 65). Keypad: key (row r, col c) centre
+(510 + 130c, 319 + 90r) for rows 789/456/123/.0←; Cancel (542, 679),
+Move (737, 679). First macro button centre (1174, 65). Extrude panel:
+Length (951, 423), Speed (951, 514), Retract (889, 605), Extrude (1012, 605).
+Bed map: a tap at (26 + 10 + 502 fx, 117 + 10 + 502 (1 - fy)) is the bed
+fraction (fx, fy) (marker size 20, travel 502). Printing modal's Pause
+(640, 420); Resume (below Park) (1174, 156).
+
+The sandbox can be reset between sessions: `/tmp` and pa-apt packages
+vanish (reinstall them); the project folder stays. If a `cd /tmp/...`
+fails, later commands run in the wrong folder: check for stray files.

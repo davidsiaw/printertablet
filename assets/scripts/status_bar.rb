@@ -1,5 +1,9 @@
 # The bar along the bottom of the screen: a coloured dot and the state of
 # the connection to Moonraker. Redraws whenever the Printer changes.
+#
+# Tap it to hide the printer's address, the Moonraker version and error
+# details (which can contain the address), e.g. for photos; tap again to
+# show them.
 class StatusBar < Group
   GREEN  = 0x40d060
   YELLOW = 0xe0c030
@@ -17,13 +21,21 @@ class StatusBar < Group
 
     pad = h / 3
     size = h * 6 / 10
-    add Rect.new(w: Screen.width, h: h, color: 0x202020)
+    background = add Rect.new(w: Screen.width, h: h, color: 0x202020)
+    background.on_tap { self.private = !@private }
     @dot = add TextBox.new(x: pad, w: size, h: h, size: size, text: "\u25CF")   # ●
     @label = add TextBox.new(x: pad + size + pad / 2, w: Screen.width, h: h, size: size,
                              align: :left, text_color: 0xdddddd)
 
     refresh
     printer.on_change { refresh }
+  end
+
+  attr_reader :private
+
+  def private=(v)
+    @private = v
+    refresh
   end
 
   def refresh
@@ -33,15 +45,16 @@ class StatusBar < Group
   end
 
   def describe
+    address = @private ? "" : "#{@address}   "
     case @printer.connection
     when "connected"
-      text = "#{@address}   Connected   Klipper: #{@printer.klippy}"
-      text += "   Moonraker #{@printer.version}" unless @printer.version.to_s.empty?
+      text = "#{address}Connected   Klipper: #{@printer.klippy}"
+      text += "   Moonraker #{@printer.version}" unless @private || @printer.version.to_s.empty?
       [text, @printer.ready? ? GREEN : YELLOW]
     when "disconnected"
-      ["#{@address}   Disconnected: #{@printer.error} (retrying)", RED]
+      [@private ? "Disconnected (retrying)" : "#{address}Disconnected: #{@printer.error} (retrying)", RED]
     else
-      ["#{@address}   Connecting...", YELLOW]
+      ["#{address}Connecting...", YELLOW]
     end
   end
 end

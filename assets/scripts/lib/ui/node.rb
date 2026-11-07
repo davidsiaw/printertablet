@@ -22,6 +22,15 @@ class Node
   def h=(v);       @h = v; Native::UI.set_num(@id, "h", v); end
   def visible=(v); @visible = v; Native::UI.set_num(@id, "visible", v ? 1 : 0); end
 
+  # 0 (invisible) .. 1 (opaque) for everything this node draws, e.g. a
+  # half-transparent backdrop. Doesn't affect its children.
+  def alpha; @alpha || 1; end
+  def alpha=(v);   @alpha = v; Native::UI.set_num(@id, "alpha", v); end
+
+  # Where this node is on the screen (x and y are relative to the parent).
+  def screen_x; (@parent ? @parent.screen_x : 0) + @x; end
+  def screen_y; (@parent ? @parent.screen_y : 0) + @y; end
+
   def move(x, y)
     self.x = x
     self.y = y

@@ -82,11 +82,14 @@ private:
         return font;
     }
 
-    // The texture for a text node, (re)rendered if its text or size changed.
+    // The texture for a text node, (re)rendered if its text, size or width
+    // changed. Text wider than the node (minus padding) is rendered smaller,
+    // so it always fits.
     TextTexture* Text(int id, const UiTree::Node& n)
     {
-        char size[16];
-        snprintf(size, sizeof(size), "%d|", n.fontSize);
+        int maxWidth = (int)(n.w - 2 * n.padding);
+        char size[32];
+        snprintf(size, sizeof(size), "%d|%d|", n.fontSize, maxWidth);
         std::string key = size + n.text;
 
         TextTexture& t = texts[id];   // new entries start zeroed
@@ -99,6 +102,20 @@ private:
 
         TTF_Font* font = Font(n.fontSize);
         if (!font || n.text.empty()) return nullptr;
+
+        // Too wide? Measure, then use a size that fits (font widths scale
+        // roughly with the size; shrink a little more until it does).
+        int textW = 0, textH = 0;
+        if (maxWidth > 0 && TTF_SizeUTF8(font, n.text.c_str(), &textW, &textH) == 0 && textW > maxWidth)
+        {
+            int fitted = n.fontSize * maxWidth / textW;
+            for (; fitted > 4; fitted--)
+            {
+                font = Font(fitted);
+                if (!font) return nullptr;
+                if (TTF_SizeUTF8(font, n.text.c_str(), &textW, &textH) == 0 && textW <= maxWidth) break;
+            }
+        }
 
         // White text; the node's colour is applied when drawing.
         SDL_Color white = { 0xff, 0xff, 0xff, 0xff };
@@ -133,12 +150,12 @@ private:
         return t.w ? &t : nullptr;
     }
 
-    void Quad(double x, double y, double w, double h, Uint32 rgb, float u = 0, float v = 0, GLuint texture = 0)
+    void Quad(double x, double y, double w, double h, Uint32 rgb, float alpha, float u = 0, float v = 0, GLuint texture = 0)
     {
         GLfloat pos[8] = { (GLfloat)x, (GLfloat)y,   (GLfloat)(x + w), (GLfloat)y,
                            (GLfloat)x, (GLfloat)(y + h), (GLfloat)(x + w), (GLfloat)(y + h) };
         GLfloat uv[8] = { 0, 0,  u, 0,  0, v,  u, v };
-        glUniform4f(uColor, ((rgb >> 16) & 0xff) / 255.0f, ((rgb >> 8) & 0xff) / 255.0f, (rgb & 0xff) / 255.0f, 1.0f);
+        glUniform4f(uColor, ((rgb >> 16) & 0xff) / 255.0f, ((rgb >> 8) & 0xff) / 255.0f, (rgb & 0xff) / 255.0f, alpha);
         glUniform1f(uUseTexture, texture ? 1.0f : 0.0f);
         if (texture) glBindTexture(GL_TEXTURE_2D, texture);
         glVertexAttribPointer(aPosition, 2, GL_FLOAT, GL_FALSE, 0, pos);
@@ -154,7 +171,7 @@ private:
 
         if (n->kind != UiTree::GROUP && n->hasColor)
         {
-            Quad(x, y, n->w, n->h, n->color);
+            Quad(x, y, n->w, n->h, n->color, n->alpha);
         }
         if (n->kind == UiTree::TEXT)
         {
@@ -165,7 +182,7 @@ private:
                 if (n->align == UiTree::LEFT) tx = x + n->padding;
                 if (n->align == UiTree::RIGHT) tx = x + n->w - n->padding - t->w;
                 double ty = y + (n->h - t->h) / 2;
-                Quad((int)tx, (int)ty, t->w, t->h, n->textColor, t->u, t->v, t->texture);
+                Quad((int)tx, (int)ty, t->w, t->h, n->textColor, n->alpha, t->u, t->v, t->texture);
             }
         }
 

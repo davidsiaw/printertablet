@@ -30,6 +30,7 @@ public:
         bool touchable;             // has a touch handler in Ruby
         bool hasColor;              // fill (RECT) or background (TEXT)
         Uint32 color;               // 0xRRGGBB
+        float alpha;                // 0..1, for everything this node draws (not its children)
         // TEXT only
         std::string text;
         Uint32 textColor;
@@ -39,7 +40,7 @@ public:
 
         Node(Kind kind)
         : kind(kind), parent(0), x(0), y(0), w(0), h(0), visible(true), touchable(false),
-          hasColor(false), color(0), textColor(0xffffff), fontSize(20), align(CENTER), padding(0)
+          hasColor(false), color(0), alpha(1), textColor(0xffffff), fontSize(20), align(CENTER), padding(0)
         {}
     };
 

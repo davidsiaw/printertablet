@@ -28,6 +28,12 @@
   `mrb_gc_arena_save`/`restore`, or the GC arena grows forever.
 - The mruby build has no `io`/`socket`/`dir` gems on purpose; networking is
   `Native::Http`.
+- **TextBox shrinks text to fit its width** (since the fans/extrude work;
+  before, it drew past the edge). Shrunk text can get tiny: lay out long
+  content on two lines rather than relying on it (temperature rows,
+  ExtrudePanel's wrapped message).
+- **Klipper error messages have several lines**; the first says what went
+  wrong ("Extrude below minimum temp" / "See the 'min_extrude_temp'...").
 - **`do ... end` binds to the outermost call.** `add Foo.new(x) do ... end`
   gives the block to `add`, not `new` (it silently became nil). Use `{ }`
   or build the object on its own line. Widgets that need a block should
@@ -87,7 +93,17 @@ thread, a script file each, JSON messages).
 
 ## Android / device
 
-- Target: API 10 (Android 2.3), `armeabi` (ARMv5), NDK r9, clang 3.2,
+- **Performance:** with `android:debuggable="true"` the NDK defaults to
+  `APP_OPTIM=debug` (-O0) for all native code; `jni/Application.mk` forces
+  `release`. The old `armeabi` (ARMv5) target had no hardware floating
+  point. The tablet is `arm64-v8a` (`adb shell getprop ro.product.cpu.abi`);
+  we build `armeabi-v7a`, which it runs (NDK r9 can't build arm64). Before
+  these, Ruby took 186-747 ms per status update and the main loop spun at
+  60,000 passes/s (it now waits for events between frames).
+- Diagnostics in the log: `Slow frame` (>100 ms between frames, with Ruby
+  time), `Main loop: N passes/s` (every 10 s), `Slow HTTP request` (>500 ms),
+  `Status worker: poll took` (>0.5 s).
+- Target: API 10 (Android 2.3), `armeabi-v7a`, NDK r9, clang 3.2,
   gnustl. No `__thread` TLS; use `mrb->ud` and the like for per-VM data.
 - GLES2 samples non-power-of-two textures with default REPEAT as black:
   all textures are padded to power of two.
@@ -108,6 +124,10 @@ thread, a script file each, JSON messages).
 - Errors come back as `{"error": {"message": "Unknown command:\"FOO\""}}`.
 - After `M84` (or a restart), `toolhead.homed_axes` is `""`; homed is `"xyz"`.
 - 401/403 means the tablet isn't in `trusted_clients` in `moonraker.conf`.
+- Ask for each object once in `/printer/objects/query` (combine attributes);
+  how Moonraker treats a repeated object isn't certain.
+- Extruding needs the hotend above `min_extrude_temp`; a single extrude-only
+  move is limited by `max_extrude_only_distance` (50 mm by default).
 - `toolhead.position` is the planned position (can run ahead of the nozzle);
   `motion_report.live_position` is the measured one (not used yet).
 - The owner's printers have a `GANTRY` macro used for homing.

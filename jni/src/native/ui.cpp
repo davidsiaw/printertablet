@@ -5,7 +5,7 @@
 //   create(kind) -> id     kind: "group", "rect" or "text"
 //   destroy(id)            and its children
 //   add(parent, child)     remove(child)     show(id)
-//   set_num(id, name, value)   x y w h visible touchable color text_color size padding
+//   set_num(id, name, value)   x y w h visible touchable color alpha text_color size padding
 //   set_str(id, name, value)   text align
 //   contains(id, x, y)     screen_width     screen_height
 //   now                    seconds, on the main loop's clock
@@ -68,6 +68,7 @@ namespace
             n.hasColor = value >= 0;
             n.color = n.hasColor ? (Uint32)value & 0xffffff : 0;
         }
+        else if (name == "alpha") n.alpha = value < 0 ? 0 : value > 1 ? 1 : (float)value;
         else if (name == "text_color") n.textColor = (Uint32)value & 0xffffff;
         else if (name == "size") n.fontSize = value < 1 ? 1 : (int)value;
         else if (name == "padding") n.padding = value;

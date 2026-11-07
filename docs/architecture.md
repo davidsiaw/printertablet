@@ -23,6 +23,15 @@
    printer/*_worker.rb      worker scripts that talk to Moonraker
    status_bar.rb    StatusBar
    toolhead_panel.rb, bed_map.rb, confirm_slider.rb   ToolheadPanel and its parts
+   keypad_modal.rb  KeypadModal (numeric keypad over a dimmed screen)
+   button.rb        Button (TextBox that lights up when pressed; enabled=)
+   macro_column.rb  MacroColumn (buttons on the right that run macros)
+   temperature_column.rb  TemperatureColumn (temperatures, middle-left)
+   fan_list.rb      FanList (fan speeds, middle-right top)
+   extrude_panel.rb ExtrudePanel (extrude/retract, middle-right bottom)
+   klipper_names.rb KlipperNames.label (readable Klipper object names)
+   lib/url.rb       URL.encode (used by both printer workers)
+   printing_modal.rb PrintingModal (covers the controls while printing)
 ```
 
 Legacy engine code from Aldebaran is still in `jni/src/` and still compiled
@@ -58,19 +67,21 @@ Per frame, C++ calls Ruby only if needed:
 ## UI: UiTree, UiScene and the Ruby classes
 
 - `ui/uitree.hpp/.cpp`: nodes `{kind (GROUP/RECT/TEXT), parent, children,
-  x, y, w, h, visible, touchable, color, text, textColor, fontSize, align,
-  padding}`. Positions are relative to the parent. No GL. Hit testing:
+  x, y, w, h, visible, touchable, color, alpha, text, textColor, fontSize,
+  align, padding}`. `alpha` (0..1) applies to everything the node draws,
+  not its children. Positions are relative to the parent. No GL. Hit testing:
   topmost visible touchable node (children are checked last-drawn first).
 - `ui/uiscene.hpp`: one small shader (solid colour, or texture x colour).
   TextBox text is rendered with SDL_ttf (white, tinted by `text_color`)
-  into power-of-two textures, cached per node, re-rendered only when text or
-  font size changes; textures of nodes not drawn this frame are freed. Fonts
+  into power-of-two textures, cached per node, re-rendered only when text,
+  font size or width changes. Text wider than the box (minus padding) is
+  rendered at a smaller size so it fits (measured with `TTF_SizeUTF8`); textures of nodes not drawn this frame are freed. Fonts
   cached per size (`fonts/sazanami-gothic.ttf`). Touch: the node that got the
   touch-down also gets moves and the touch-up.
 - `native/ui.cpp`: `Native::UI.create/destroy/add/remove/show/set_num/
   set_str/contains/screen_width/screen_height/now/wake_at`. Flat ids and
   values; the Ruby classes wrap them.
-- Ruby (`lib/ui/`): `Node` (x, y, w, h, visible, move, show/hide, destroy,
+- Ruby (`lib/ui/`): `Node` (x, y, w, h, visible, alpha, move, show/hide, destroy,
   contains?, on_tap, on_touch_down/move/up), `Group` (add, remove, children),
   `Rect` (color), `TextBox` (text, color = background, text_color, size,
   align :left/:center/:right, padding), `Screen` (width, height, show,
@@ -135,9 +146,20 @@ helper and `mrb_exc_raise` it at the end.
   `status`, `connection`, `klippy`, `version`, `error`, `toolhead`, `ready?`,
   `homed?`, `busy?`, `last_error`, `send_gcode(gcode)` (false if busy) and
   `on_change { }`.
-- `status_worker.rb`: `/server/info` every 2 s; while Klipper is ready,
-  `/printer/objects/query?toolhead=position,axis_minimum,axis_maximum,homed_axes`
-  every 0.25 s. Replies with the whole status **only when it changed**.
+- `status_worker.rb`: `/server/info` every 2 s. Whenever Klipper becomes
+  ready, the sensor list from
+  `/printer/objects/query?heaters=available_sensors,available_heaters`.
+  While ready, every 0.25 s one query for the toolhead
+  (`position,axis_minimum,axis_maximum,homed_axes`), every sensor
+  (`temperature,target`) and every fan (`speed`; fans found in
+  `/printer/objects/list`: fan, heater_fan, controller_fan, fan_generic,
+  temperature_fan). Each object is asked for once with all its attributes
+  (a temperature_fan is both); names URL-encoded. The same query asks for
+  `print_stats=state` (`print_state`). Also, once per ready,
+  `configfile=settings` for each heater's `min_temp`/`max_temp`
+  (`heater_limits`). Temperatures are rounded to
+  0.1 so jitter doesn't count as a change. Replies with the whole status
+  **only when it changed**.
 - `gcode_worker.rb`: one command at a time via
   `POST /printer/gcode/script?script=...` (Moonraker answers when the G-code
   finishes; timeout 10 min). Replies `{"gcode", "ok", "error"}` with
@@ -146,20 +168,75 @@ helper and `mrb_exc_raise` it at the end.
 
 ## Screen
 
-`main.rb` builds one `Group` holding `StatusBar.new(printer)` and
+`main.rb` builds one `Group` holding `StatusBar.new(printer)`,
 `ToolheadPanel.new(printer, x:, y:, height:, gap:)` (margin = H/30, gap =
-margin/2, height = H - StatusBar.height - 2 margins). Both redraw from
-`Printer#on_change`; neither uses a timer, so with an idle printer Ruby
-doesn't run at all.
+margin/2, height = H - StatusBar.height - 2 margins) and
+`MacroColumn.new(printer, MACROS, ...)` (W/8 wide against the right margin,
+buttons as tall as the X/Y/Z boxes). Between the two (`ToolheadPanel#width`
+tells main.rb where the panel ends), two equal columns: `TemperatureColumn`,
+and `FanList` over `ExtrudePanel` (each half the panel height). All redraw from `Printer#on_change`;
+none uses a timer, so with an idle printer Ruby doesn't run at all.
 
+- `Button.new(color:, pressed_color:, ...) { ... }`: a `TextBox` that lights
+  up while touched and runs the block on tap; `enabled = false` dims it
+  (alpha 0.4) and ignores taps. Used by `KeypadModal` and `MacroColumn`.
+- `TemperatureColumn`: a two-line row (name, then reading) per entry of
+  `Printer#temperatures`; extruder and heater_bed rows are box height,
+  others 7/10 of it. Heaters show `current° / target°` (or `/ off`), orange
+  while target > 0; sensors show `current°`. Rows are rebuilt only when the list of sensor names changes;
+  while nothing is known (offline, Klipper restarting) the old rows stay
+  with "-". `KlipperNames.label(name)` makes the names readable. Tapping
+  the extruder/bed row opens the keypad for its target (0 = off, else
+  within `Printer#heater_limits`), sent by `Printer#set_heater` as
+  `SET_HEATER_TEMPERATURE HEATER=<name> TARGET=..`.
+- `FanList`: a row per `Printer#fans` entry, `name   NN%`, orange while
+  spinning; same rebuild/offline rules. `Printer.settable_fan?` (part fan,
+  `fan_generic`) rows are lighter grey and open the keypad (0-100 %);
+  `Printer#set_fan` sends `M106 S0-255` / `SET_FAN_SPEED FAN=.. SPEED=0-1`.
+- `ExtrudePanel`: Length (default 50 mm, 0.1-1000) and Speed (10 mm/s,
+  0.1-100) boxes open the `KeypadModal`; Retract/Extrude call
+  `Printer#extrude(±length, speed)` = `M83` + `G1 E.. F<speed*60>` (as
+  Mainsail). Disabled while busy. Below, up to 3 lines: "Extruding..." then
+  nothing, or the first line of Klipper's error in red (word-wrapped with an
+  estimated character width).
+- `PrintingModal` (added last in main.rb, so on top): visible while
+  `Printer#printing?` (print_stats state "printing"). Covers everything but
+  the status bar and swallows taps; "Printing" and a Pause button
+  (`Printer#pause` = `PAUSE`; "Pausing...", Klipper's error below it if
+  refused). When a print starts it closes any open `KeypadModal` and moves
+  itself to the top. Paused/complete/cancelled: hidden.
+- `MacroColumn`: `MACROS` in `main.rb` is `[[label, gcode], ...]`. While
+  `Printer#paused?`, an orange Resume button (`Printer#resume` = `RESUME`)
+  appears below the macros. A tap
+  sends the G-code via `Printer#send_gcode`; the running button reads
+  "Label..."; all are disabled while the printer is busy with anything.
+
+- `StatusBar`: `address   Connected   Klipper: ready   Moonraker vX`; a tap
+  toggles `private` (no address, version or error detail; resets on
+  restart).
 - `ToolheadPanel`: boxes and slider are each height/9 tall; the map is
   square. HOME (a `TextBox` with `on_tap`) shows when the toolhead is known
   but not homed on x, y and z; text "HOMING..." while `printer.busy?`.
   The slider shows when homed.
 - `BedMap#show_toolhead(toolhead or nil)`: maps `position` between
-  `axis_minimum`/`axis_maximum`, Y up, clamped.
+  `axis_minimum`/`axis_maximum`, Y up, clamped. `on_pick { |x, y| }` runs on
+  a tap (touch-up on the map) with the bed position in mm (the marker
+  mapping inverted, clamped, rounded to 0.1); `ToolheadPanel` sends
+  `Printer#move_xy` (`G90` + `G1 X Y F6000`) while homed and shows
+  `show_target` (a faint square) until the toolhead is within 1 mm, or the
+  move is refused. `Node#screen_x/screen_y` turn touch points into local
+  ones.
 - `ConfirmSlider.new(w:, h:, text:) { ... }`: runs the block when the knob is
   dragged to the end and released; springs back otherwise.
+- `KeypadModal.open(title:, hint:, action: "Set") { |value| error_or_nil }`: a full-screen
+  backdrop (black, alpha 0.6, tap = cancel) and a window with the display,
+  a hint line, keys 0-9 . ← (max 8 chars, one dot), Cancel and Move. The
+  block gets the number as a Float; returning a string shows it in red and
+  keeps the modal open, nil closes it. Keys light up while pressed. Opened
+  by tapping an X/Y/Z box while homed; `ToolheadPanel#open_keypad` checks
+  the range (`Printer#axis_range`) and calls `Printer#move_to(axis, value)`,
+  which sends `G90` + `G1 <axis><value> F<speed>` (`Printer::MOVE_SPEED`:
+  X/Y 6000, Z 600 mm/min).
 
 ## Build
 

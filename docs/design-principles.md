@@ -62,6 +62,11 @@ doubt, ask; don't guess.
 
 11. **C++ UI code lives in `jni/src/ui/`**, bindings in `jni/src/native/`.
 
+    **Look:** tappable things are the lighter grey `0x484848` (X/Y/Z boxes,
+    Length/Speed, extruder/bed rows, settable fans, buttons); read-only rows
+    are darker `0x303030`; orange `0xff8c1a` is for primary actions and
+    "active" (heating, spinning, marker).
+
 ## How to work (the owner's expectations)
 
 12. **Ask before big or ambiguous changes; propose a plan first.** The owner

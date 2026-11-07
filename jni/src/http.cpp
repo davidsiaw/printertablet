@@ -1,4 +1,5 @@
 #include "http.hpp"
+#include "printlog.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -104,10 +105,36 @@ namespace
     // Minimal HTTP/1.0 request with an empty body: the server closes the
 }
 
+namespace
+{
+    // Diagnostics: logs requests slower than this when they end (however
+    // they end).
+    const Uint32 SLOW_REQUEST_MS = 500;
+
+    struct SlowRequestLog
+    {
+        const char* method;
+        const std::string& path;
+        Uint32 started;
+        SlowRequestLog(const char* method, const std::string& path)
+        : method(method), path(path), started(SDL_GetTicks()) {}
+        ~SlowRequestLog()
+        {
+            Uint32 ms = SDL_GetTicks() - started;
+            if (ms > SLOW_REQUEST_MS)
+            {
+                printlog("Slow HTTP request: %s %.80s took %u ms\n", method, path.c_str(), ms);
+            }
+        }
+    };
+}
+
 bool Http::Request(const char* method, const std::string& host, int port, const std::string& path,
                    int& statusCode, std::string& body, std::string& error,
                    SDL_atomic_t* cancel, int readTimeoutMs)
 {
+    SlowRequestLog timing(method, path);
+
     std::stringstream portStr;
     portStr << port;
 

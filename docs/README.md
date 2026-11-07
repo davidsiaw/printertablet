@@ -21,10 +21,23 @@ Read these in order if you are picking the project up:
 The owner builds and installs the app on the tablet. All UI and printer
 logic is now Ruby (`assets/scripts/`):
 
-- `StatusBar` (bottom): connection state.
-- `ToolheadPanel` (left): X/Y/Z boxes; a `BedMap` (10x10 grid, toolhead
-  marker); a big orange **HOME** button (sends `GANTRY`) when not homed; a
-  `ConfirmSlider` that sends `M84` when homed.
+- `StatusBar` (bottom): connection state. Tap it to hide the address,
+  Moonraker version and error details (for photos); tap again to show.
+- `ToolheadPanel` (left): X/Y/Z boxes (tap one while homed: a
+  `KeypadModal` to type a position and move there); a `BedMap` (10x10 grid,
+  toolhead marker; tap it while homed to move there in X/Y); a big orange **HOME** button (sends `GANTRY`) when not
+  homed; a `ConfirmSlider` that sends `M84` when homed.
+- `TemperatureColumn` (middle-left): every temperature Klipper reports;
+  extruder and bed big on top (tap: set the target), other heaters/sensors
+  below.
+- Middle-right, split in two: `FanList` (every fan's speed; tap the part fan / fan_generic ones to set
+  it) on top, and
+  `ExtrudePanel` (Length / Speed boxes with the keypad, Retract / Extrude,
+  Klipper's error if it refuses) below.
+- `MacroColumn` (right): a button per macro, from `MACROS` in `main.rb`
+  (for now just Park -> `PARK`); a Resume button while a print is paused.
+- `PrintingModal`: while printing, covers all controls (not the status bar)
+  with "Printing" and a Pause button.
 - `Printer` talks to Moonraker through two worker threads
   (`printer/status_worker.rb`, `printer/gcode_worker.rb`).
 - Still native (Java/C++): screen dims after 1 min idle, ripple screensaver
@@ -40,18 +53,22 @@ works on the tablet (owner checked, after step 3).
 2. ~~Workers (threads with their own VM, message queues), `Native::Http`, mruby-json; printer logic in Ruby.~~ Done.
 3. ~~Toolhead panel in Ruby; delete `ToolheadPanelScene`, `MoonrakerClient`, the `moonraker` binding.~~ Done.
 
-No next step has been agreed yet: ask the owner.
+After step 3: tap-to-move keypad, macro column, temperature column, fans
+and extrude (see history.md). No next step has been
+agreed yet: ask the owner.
 
 Ideas raised but not done (ask before doing): hide the M84 slider while
 printing; show G-code errors on screen (`Printer#last_error`); move static UI
 a few pixels now and then against burn-in; wake the screen on printer events;
-use Moonraker's websocket instead of polling; `motion_report` live position
+use Moonraker's websocket instead of polling; a minus key on the keypad
+(for negative axis minimums); setting other heaters (heater_generic)
+from the screen; a text-width measuring primitive (wrapping is estimated now); `motion_report` live position
 instead of `toolhead.position`; let `main.rb` configure dim/screensaver times.
 
 ## Building and running
 
 - `make run-android`: builds in the `davidsiaw/ndk-env:original-api-level-10`
-  docker image (NDK r9, clang 3.2, API 10, `armeabi`), installs with `adb`,
+  docker image (NDK r9, clang 3.2, API 10, `armeabi-v7a`, `APP_OPTIM := release`), installs with `adb`,
   starts the app and follows logcat. **This sandbox has no docker**: the owner
   runs it. The first build after `make clean` or a `build_config.rb` change
   also builds mruby on the host (`make mruby`; needs any `ruby` + `rake`).

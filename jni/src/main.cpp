@@ -120,6 +120,20 @@ static void DrainGLErrors()
 	while (glGetError() != GL_NO_ERROR) { }
 }
 
+// Diagnostics: time spent in Ruby since the last frame was drawn (added up by
+// game()'s calls into Ruby), so a late frame can say where the time went.
+static Uint32 rubyMsThisFrame = 0;
+
+struct RubyTimer
+{
+	Uint32 started;
+	RubyTimer() : started(SDL_GetTicks()) {}
+	~RubyTimer() { rubyMsThisFrame += SDL_GetTicks() - started; }
+};
+
+static const Uint32 SLOW_FRAME_MS = 100;
+static const Uint32 LOOP_REPORT_MS = 10000;
+
 void run(SceneFactory makeScene, std::shared_ptr<GameContext> context)
 {
 	InputState inputState;
@@ -131,11 +145,22 @@ void run(SceneFactory makeScene, std::shared_ptr<GameContext> context)
 	// when you press Home), so stop rendering until we are back.
 	bool inBackground = false;
 	SDL_GLContext glContext = SDL_GL_GetCurrentContext();
+
+	// Diagnostics (see SLOW_FRAME_MS, LOOP_REPORT_MS)
+	Uint32 lastFrame = SDL_GetTicks(), lastDrawMs = 0;
+	Uint32 reportStart = lastFrame, passes = 0, frames = 0;
 	
 	while (scene->Running())
 	{
+		passes++;
+		// Wait for an event, but not past the next frame: without this the loop
+		// spun flat out between frames (60,000 passes/s), starving the printer
+		// threads and Ruby. One event per pass, so a finger-down and -up are
+		// never seen in the same pass (InputState only keeps the latest state).
 		SDL_Event e;
-		if ( SDL_PollEvent(&e) )
+		Uint32 sinceFrame = SDL_GetTicks() - time;
+		int wait = sinceFrame >= 16 ? 0 : (int)(16 - sinceFrame);
+		if ( wait > 0 ? SDL_WaitEventTimeout(&e, wait) : SDL_PollEvent(&e) )
 		{
 			if (e.type == SDL_QUIT)
 			{
@@ -191,11 +216,28 @@ void run(SceneFactory makeScene, std::shared_ptr<GameContext> context)
 		scene->Update(inputState, now);
 		if (now - time > 15)
         {
+			Uint32 drawStart = SDL_GetTicks();
+			if (drawStart - lastFrame > SLOW_FRAME_MS)
+			{
+				printlog("Slow frame: %u ms since the last one (Ruby %u ms; drawing the last one took %u ms)\n",
+				         drawStart - lastFrame, rubyMsThisFrame, lastDrawMs);
+			}
             glClearColor( 0.0, 0.0, 0.0, 1.0 );
             glClear ( GL_COLOR_BUFFER_BIT );
             scene->Render(context);
             SDL_GL_SwapWindow(context->GetWindow());
 			time = SDL_GetTicks();
+			lastDrawMs = time - drawStart;
+			lastFrame = time;
+			rubyMsThisFrame = 0;
+			frames++;
+		}
+
+		if (now - reportStart >= LOOP_REPORT_MS)
+		{
+			printlog("Main loop: %u passes/s, %u frames/s\n", passes * 1000 / (now - reportStart), frames * 1000 / (now - reportStart));
+			reportStart = now;
+			passes = frames = 0;
 		}
 	}
 }
@@ -250,6 +292,7 @@ void game(std::shared_ptr<GameContext> context)
     mrb_state* mrb = scripting.GetState();
     auto onTouch = [&scripting, mrb](int id, UiScene::TouchKind kind, double x, double y)
     {
+        RubyTimer timing;
         int ai = mrb_gc_arena_save(mrb);   // floats can be heap objects (32-bit)
         mrb_value args[4] = { mrb_fixnum_value(id), mrb_fixnum_value(kind), mrb_float_value(mrb, x), mrb_float_value(mrb, y) };
         scripting.Call("Native::UI", "touch", 4, args);
@@ -267,6 +310,7 @@ void game(std::shared_ptr<GameContext> context)
             [&scripting, &ui, mrb](const InputState&, Uint32 timestamp)
             {
                 double seconds = timestamp / 1000.0;
+                RubyTimer timing;
                 if (ui.WakeDue(seconds))
                 {
                     int ai = mrb_gc_arena_save(mrb);
